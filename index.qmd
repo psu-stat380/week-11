@@ -1,0 +1,705 @@
+---
+title: "Week 11"
+title-block-banner: true
+title-block-style: default
+execute:
+  freeze: true
+format: html
+# format: pdf
+---
+
+```{r}
+#| collapsed: true
+#| tags: []
+#| vscode: {languageId: r}
+dir <- "~/work/courses/stat380/weeks/week-11/"
+```
+
+
+#### Packages we will require this week
+
+```{r warnings=FALSE, message=FALSE, results='hide'}
+#| collapsed: true
+#| tags: []
+#| vscode: {languageId: r}
+packages <- c(
+    # Old packages
+    "ISLR2",
+    "dplyr",
+    "tidyr",
+    "readr",
+    "purrr",
+    "glmnet",
+    "caret",
+    "repr",
+    "tidyverse",
+    "mlbench",
+    "nnet",
+    "rpart",
+    "e1071",
+    # NEW
+    "torch",
+    "torchvision",
+    "luz"
+)
+
+# renv::install(packages)
+sapply(packages, require, character.only=TRUE)
+```
+
+# Tue, Apr 4 (Recap)
+
+---
+
+
+## Regression with Neural Networks
+
+```{r}
+#| collapsed: true
+#| tags: []
+generate_data <- function(n, noise = 0.1) {
+  x <- seq(1*pi, 1.7*pi, length.out = n)
+  y <- exp(x) * (sin(150/x) + rnorm(n, 0, noise))
+  data.frame(x = x, y = y)
+}
+
+df <- generate_data(200, noise=0.1)
+plot(df$x, df$y, pch = 19)
+```
+
+```{r}
+#| collapsed: true
+#| tags: []
+x_new <- seq(0.9 * pi, 2.1 * pi, length.out=1000)
+df_new <- data.frame(x = x_new)
+
+plt_reg <- function(f, x,...){
+    ynew <- f(x)
+    ylim <- range(c(ynew, df$y))
+    ylim[1] <- max(c(-800, ylim[1]))
+    ylim[2] <- min(c(250, ylim[2]))
+    xlim <- range(x)
+    
+    plot(df$x, df$y, pch = 22, col="red", xlim=xlim, ylim=ylim,...)
+    points(x[, 1], ynew, pch=22, type="l")
+}
+```
+
+---
+
+### Neural Network
+
+```{r}
+#| collapsed: true
+#| tags: []
+p <- 1
+q1 <- 20
+q2 <- 100
+
+reg_module <- nn_module(
+  initialize = function() {
+    self$input_to_hidden1 <- nn_linear(p, q1)
+    self$hidden1_to_hidden2 <- nn_linear(q1, q2)
+    self$hidden2_to_output <- nn_linear(q2, 1)
+    self$activation <- nn_relu()
+    self$sigmoid <- nn_sigmoid()
+  },
+  forward = function(x) {
+    x %>% 
+      self$input_to_hidden1() %>% 
+      self$activation() %>% 
+      self$hidden1_to_hidden2() %>% 
+      self$activation() %>% 
+      self$hidden2_to_output()
+  }
+)
+```
+
+```{r}
+#| collapsed: true
+#| tags: []
+regressor <- 
+function(train, type="nn", ...){
+    
+    if(type == "lm"){
+        f = \(x) lm(y ~ x, df) %>% 
+                    predict(., x)
+    }
+    
+    else if(type == "rpart"){
+        f = \(x) 
+            rpart(y ~ x, df) %>% 
+            predict(., x)
+    }
+        
+    else if(type == "svm"){
+        f = \(x)
+            svm(y ~ x, df, kernel="radial") %>% 
+            predict(., x)
+    } 
+        
+    else if(type == "nn"){
+        X_tensor <- torch_tensor(cbind(df$x %>% as.matrix()), dtype=torch_float())
+        y_tensor <- torch_tensor(cbind(df$y %>% as.matrix()), dtype=torch_float())
+        F <- reg_module()
+        optimizer <- optim_adam(F$parameters, lr=0.2)
+        epochs <- 1000
+
+        for(i in 1:epochs){
+            loss <- nn_mse_loss()(F(X_tensor), y_tensor)
+            optimizer$zero_grad()
+            loss$backward()
+            optimizer$step()
+        }
+        f = \(x) as_array(F( torch_tensor(x %>% as.matrix(), dtype=torch_float()) ))
+    }
+    
+    return(f)
+}
+```
+
+```{r}
+#| collapsed: true
+#| tags: []
+f <- regressor(df, "nn")
+plt_reg(f, df_new)
+```
+
+---
+
+## Classification with Neural Networks
+
+```{r}
+#| collapsed: true
+#| tags: []
+ex <- \(x) ifelse(
+    ((abs(x[1]) + 0.05 * rnorm(1)  > 0.50 && abs(x[2]) + 0.05 * rnorm(1)  > 0.50)) || 
+    ((abs(x[1]) + 0.05 * rnorm(1)  < 0.25 && abs(x[2]) + 0.05 * rnorm(1)  < 0.25)),
+    1, 0
+)
+
+gen_classification_data <- function(n=500){
+    X <- t(replicate(n, 2 * runif(2) - 1))
+    y <- apply(X, 1, ex) %>% as.factor()
+    col <- ifelse(y == 0, "blue", "red")
+    df <- data.frame(y = y, x1 = X[, 1], x2 = X[, 2], col=col)
+    return(df)
+}
+```
+
+```{r}
+#| collapsed: true
+#| tags: []
+df <- gen_classification_data(500)
+plot(df$x1, df$x2, col = df$col, pch = 19)
+```
+
+```{r}
+#| collapsed: true
+#| tags: []
+Xnew <- cbind(
+    rep(seq(-1.1, 1.1, length.out=50), 50),
+    rep(seq(-1.1, 1.1, length.out=50), each = 50)
+)
+
+df_new = data.frame(x1=Xnew[, 1], x2=Xnew[, 2])
+
+plt <- function(f, x){
+    plot(x[, 1], x[, 2], col=ifelse(f(x) < 0.5, "blue", "red"), pch=22)
+    points(df$x1, df$x2, col= ifelse(y == "0", "blue", "red"), pch = 19)
+}
+
+overview <- function(f){
+    predicted <- ifelse(f(df[, -1]) < 0.5, 0, 1)
+    actual <- df[, 1]
+    table(predicted, actual)
+}
+```
+
+### Neural Network with 1 hidden layer
+---
+
+```{r}
+#| collapsed: true
+#| tags: []
+p <- 2
+q <- 20
+
+hh1_module <- nn_module(
+  initialize = function() {
+      
+    self$input_to_hidden <- nn_linear(p, q)
+      
+    self$hidden_to_output <- nn_linear(q, 1)
+      
+    self$activation <- nn_relu()
+      
+    self$sigmoid <- nn_sigmoid()
+  },
+  forward = function(x) {
+    x %>% 
+      self$input_to_hidden() %>% 
+      self$activation() %>% 
+      self$hidden_to_output() #%>% 
+      self$sigmoid()
+  }
+)
+
+
+q1 <- 100
+q2 <- 20
+
+hh2_module <- nn_module(
+  initialize = function() {
+    self$input_to_hidden1 <- nn_linear(p, q1)
+    self$hidden1_to_hidden2 <- nn_linear(q1, q2)
+    self$hidden2_to_output <- nn_linear(q2, 1)
+    self$activation <- nn_relu()
+    self$sigmoid <- nn_sigmoid()
+  },
+  forward = function(x) {
+    x %>% 
+      self$input_to_hidden1() %>% 
+      self$activation() %>% 
+      self$hidden1_to_hidden2() %>% 
+      self$activation() %>% 
+      self$hidden2_to_output() %>% 
+      self$sigmoid()
+  }
+)
+```
+
+---
+
+```{r}
+#| collapsed: true
+#| tags: []
+classifier <- 
+function(train, type="nn", ...){
+    
+    if(type == "logistic"){
+        f = \(x) glm(y ~ x1 + x2, train, family=binomial()) %>% 
+                 predict(., x, type="response")
+    }
+    
+    else if(type == "rpart"){
+        f = \(x) 
+            rpart(y ~ x1 + x2, df, method="class") %>% 
+            predict(., x, type="class") %>% 
+            as.numeric(.) - 1
+    }
+        
+    else if(type == "svm"){
+        f = \(x)
+            svm(y ~ x1 + x2, df, kernel="radial") %>% 
+            predict(., x) %>% 
+            as.numeric(.) - 1
+    } 
+        
+    else if(type == "nn"){
+        X_tensor <- torch_tensor(train[, -1] %>% as.matrix(), dtype=torch_float())
+        y_tensor <- torch_tensor(cbind(train$y %>% as.numeric() - 1), dtype=torch_float())
+        F <- hh2_module()
+        optimizer <- optim_adam(F$parameters, lr=0.05)
+        epochs <- 1000
+
+        for(i in 1:epochs){
+            loss <- nn_bce_loss()(F(X_tensor), y_tensor)
+            optimizer$zero_grad()
+            loss$backward()
+            optimizer$step()
+        }
+        f = \(x) as_array(F( torch_tensor(x %>% as.matrix(), dtype=torch_float()) ))
+    }
+    
+    return(f)
+}
+```
+
+```{r}
+#| collapsed: true
+#| tags: []
+ex <- \(x) ifelse(
+    ((abs(x[1]) + 0.05 * rnorm(1)  > 0.50 && abs(x[2]) + 0.05 * rnorm(1)  > 0.50)) || 
+    ((abs(x[1]) + 0.05 * rnorm(1)  < 0.25 && abs(x[2]) + 0.05 * rnorm(1)  < 0.25)),
+    1, 0
+)
+
+
+n <- 300
+X <- t(replicate(n, 2 * runif(2) - 1))
+y <- apply(X, 1, ex) %>% as.factor()
+col <- ifelse(y == 0, "blue", "red")
+df <- data.frame(y = y, x1 = X[, 1], x2 = X[, 2])
+plot(df$x1, df$x2, col = col, pch = 19)
+
+Xnew <- cbind(
+    rep(seq(-1.1, 1.1, length.out=50), 50),
+    rep(seq(-1.1, 1.1, length.out=50), each = 50)
+)
+
+df_new = data.frame(x1=Xnew[, 1], x2=Xnew[, 2])
+```
+
+```{r}
+#| collapsed: true
+#| tags: []
+options(repr.plot.width=15, repr.plot.height=7.5)
+par(mfrow=c(1,2))
+
+f <- classifier(df, "rpart")
+plt(f, df_new)
+
+f <- classifier(df, "nn")
+plt(f, df_new)
+
+overview(f)
+```
+
+---
+
+# Thu, Apr 6
+
+### Agenda:
+
+1. Introduction to `Luz`
+1. Dataloaders
+1. Torch for image classification
+
+### Luz
+
+Luz is a higher level API for torch providing abstractions to allow for much less verbose training loops.
+
+---
+
+#### Allowing hyperparameters for NNs
+
+```{r}
+#| tags: []
+nn_model <- nn_module(
+  initialize = function(p, q1) {  
+    self$hidden1 <- nn_linear(p, q1)
+    self$output <- nn_linear(q1, 1)
+    self$activation <- nn_relu()
+    self$sigmoid <- nn_sigmoid()
+  },
+    
+  forward = function(x) {
+    x %>% 
+      self$hidden1() %>% 
+      self$activation() %>% 
+      self$output() %>% 
+      self$sigmoid()
+  }
+)
+```
+
+```{r}
+#| tags: []
+x <- torch_randn(10, 10000)
+x
+```
+
+```{r}
+#| tags: []
+nn_model(p=10000, q1=10)(x)
+```
+
+---
+
+#### Luz Setup
+
+```{r}
+#| tags: []
+nn_model %>%
+    setup(
+        loss = nn_bce_loss(),
+        optimizer = optim_adam
+    )
+```
+
+> This is equivalent to specifying:
+>
+> ```
+> F <- nn_model()
+> opt <- optim_adam(F$parameters)
+> ...
+> for(i in 1:...){
+>     loss <- nn_bce_loss()(x, f(y))
+>     ...
+> }
+> ```
+
+----
+
+#### Luz hyperparameters
+
+```{r}
+#| collapsed: true
+#| tags: []
+nn_model <- nn_module(
+  initialize = function(p, q1, q2, q3) {  
+    self$hidden1 <- nn_linear(p, q1)
+    self$hidden2 <- nn_linear(q1, q2)
+    self$hidden3 <- nn_linear(q2, q3)
+    self$output <- nn_linear(q3, 1)
+    self$activation <- nn_relu()
+    self$sigmoid <- nn_sigmoid()
+  },
+    
+  forward = function(x) {
+    x %>% 
+      self$hidden1() %>% self$activation() %>% 
+      self$hidden2() %>% self$activation() %>% 
+      self$hidden3() %>% self$activation() %>% 
+      self$output() %>% self$sigmoid()
+  }
+)
+```
+
+```{r}
+#| tags: []
+nn_model %>%
+    setup(
+        loss = nn_bce_loss(),
+        optimizer = optim_adam
+    ) %>% 
+    set_hparams(p=2, q1=5, q2=7, q3=5) %>% 
+    set_opt_hparams(lr=0.02)
+```
+
+> This is now equivalent to specifying:
+>
+> ```
+> F <- nn_model(p=2, q1=5, q2=7, q3=5)
+> opt <- optim_adam(lr=0.02)
+> ...
+> for(i in 1:...){
+>     loss <- nn_bce_loss()(x, f(y))
+>     ...
+> }
+> ```
+
+---
+
+#### Luz Fit
+
+```{r}
+#| tags: []
+fit_nn <- nn_model %>%
+    setup(
+        loss = nn_bce_loss(),
+        optimizer = optim_adam
+    ) %>% 
+    set_hparams(p=2, q1=5, q2=7, q3=5) %>% 
+    set_opt_hparams(lr=0.02) %>%
+    ### Fit the neural network
+    fit(
+        data = list(
+            as.matrix(df[, -1]),
+            as.numeric(df[, 1]) - 1
+        ),
+        epochs = 10,
+        verbose=TRUE
+    )
+```
+
+> This now becomes equivalent to:
+>
+> ```
+> F <- nn_model(p=2, q1=5, q2=7, q3=5)
+> opt <- optim_adam(lr=0.02)
+>
+> x <- torch_tensor(as.matrix(df[, -1]),     dtype=torch_float())
+> y <- torch_tensor(as.numeric(df[, 1]) - 1, dtype=torch_float())
+>
+> for(i in 1:epochs){
+>     loss <- nn_bce_loss()(x, f(y))
+>     optimizer\$zero_grad()
+>     loss\$backward()
+>     optimizer\$step()
+>     print(paste0("Train metrics: Loss: ", loss))
+> }
+> ```
+
+```{r}
+#| tags: []
+plot(fit_nn)
+```
+
+The output of Luz allows you to use the familiar predict function
+
+```{r}
+#| tags: []
+predict(fit_nn, cbind(rnorm(10), rnorm(10))) %>% as_array
+```
+
+---
+
+#### Luz validation Data
+
+```{r}
+#| tags: []
+test_ind <- sample(1:nrow(df), 23, replace=FALSE)
+```
+
+```{r}
+#| tags: []
+fit_nn <- nn_model %>%
+    setup(
+        loss = nn_bce_loss(),
+        optimizer = optim_adam
+    ) %>% 
+    set_hparams(p=2, q1=5, q2=7, q3=5) %>% 
+    set_opt_hparams(lr=0.02) %>%
+    ### Fit the neural network
+    fit(
+        data = list(
+            as.matrix(df[-test_ind, -1]),
+            as.numeric(df[-test_ind, 1]) - 1
+        ),
+        valid_data = list(
+            as.matrix(df[+test_ind, -1]),
+            as.numeric(df[+test_ind, 1]) - 1
+        ),
+        epochs = 10,
+        verbose=TRUE
+    )
+```
+
+```{r}
+#| tags: []
+plot(fit_nn)
+```
+
+
+---
+
+#### Luz metrics
+
+Luz metrics allow you to examine metrics other than the loss function during the NNet training procedure
+
+```{r}
+#| tags: []
+predicted <- torch_tensor( sample(0:1, 100, replace=TRUE) )
+expected <- torch_tensor( sample(0:1, 100, replace=TRUE) )
+
+metric <- luz_metric_binary_accuracy()
+
+metric <- metric$new()
+metric$update(expected, expected)
+metric$compute()
+```
+
+>predicted <- torch_cat(list(torch_zeros(50), torch_ones(50)))
+>
+>expected <- torch_cat(list(torch_ones(50), torch_zeros(50)))
+>
+>metric <- luz_metric_binary_accuracy()
+
+```{r}
+#| collapsed: true
+#| tags: []
+nn_model %>%
+    setup(
+        loss = nn_bce_loss(),
+        optimizer = optim_adam,
+        # Specify the metrics you want to examine
+        metrics = list(
+            luz_metric_binary_accuracy(),
+            luz_metric_binary_auroc()
+        )
+    )
+```
+
+----
+
+#### Putting it all together
+
+```{r}
+#| tags: []
+fit_nn <- nn_model %>%
+    setup(
+        loss = nn_bce_loss(),
+        optimizer = optim_adam,
+        metrics = list(
+            luz_metric_binary_accuracy(),
+            luz_metric_binary_auroc()
+        )
+    ) %>% 
+    set_hparams(p=2, q1=5, q2=7, q3=5) %>% 
+    set_opt_hparams(lr=0.01) %>%
+    ### Fit the neural network
+    fit(
+        data = list(
+            as.matrix(df[-test_ind, -1]),
+            as.numeric(df[-test_ind, 1]) - 1
+        ),
+        valid_data = list(
+            as.matrix(df[+test_ind, -1]),
+            as.numeric(df[+test_ind, 1]) - 1
+        ),
+        epochs = 100,
+        verbose=TRUE
+    )
+```
+
+```{r}
+#| tags: []
+plot(fit_nn)
+```
+
+```{r}
+#| collapsed: true
+#| tags: []
+cols <- ifelse(as_array(predict(fit_nn, Xnew)) > 0.5, "red", "blue")
+plot(Xnew[, 1], Xnew[, 2], col=cols)
+points(df$x1, df$x2, col=col)
+```
+
+---
+
+#### Final result
+
+```{r}
+#| collapsed: true
+#| tags: []
+fit_nn <- nn_model %>%
+    setup(
+        loss = nn_bce_loss(),
+        optimizer = optim_adam,
+        metrics = list(
+            luz_metric_binary_accuracy()
+        )
+    ) %>%
+    set_hparams(p = 2, q1=20, q2=100, q3=20) %>% 
+    set_opt_hparams(lr=0.01) %>% 
+    
+    # Fitting the actual model
+    fit(
+        data = list(
+            as.matrix(df[-test_ind, -1]),
+            as.numeric(df[-test_ind, 1]) - 1
+        ),
+        valid_data = list(
+            as.matrix(df[test_ind, -1]),
+            as.numeric(df[test_ind, 1]) - 1
+        ),
+        epochs = 500,
+        verbose=FALSE
+    )
+```
+
+```{r}
+#| collapsed: true
+#| tags: []
+plot(fit_nn)
+```
+
+```{r}
+#| collapsed: true
+#| tags: []
+cols <- ifelse(as_array(predict(fit_nn, Xnew)) > 0.5, "red", "blue")
+plot(Xnew[, 1], Xnew[, 2], col=cols)
+points(df$x1, df$x2, col=col)
+```
